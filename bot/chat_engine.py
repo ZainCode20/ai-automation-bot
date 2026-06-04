@@ -19,15 +19,26 @@ class ChatEngine:
         """
         self.config = config
         self.memory = ConversationMemory()
-        self.task_executor = TaskExecutor(config)
         
         # Setup OpenRouter
         self.api_key = os.getenv('OPENROUTER_API_KEY')
         self.model = os.getenv('OPENROUTER_MODEL', 'openai/gpt-3.5-turbo')
         self.api_url = "https://openrouter.ai/api/v1/chat/completions"
         
+        # Verify API key exists
         if not self.api_key:
-            raise ValueError("OPENROUTER_API_KEY not found in environment variables")
+            raise ValueError(
+                "❌ OPENROUTER_API_KEY not found!\n"
+                "Please add it to your .env file:\n"
+                "OPENROUTER_API_KEY=sk-or-your_key_here"
+            )
+        
+        # Initialize task executor (do this after all validations)
+        try:
+            self.task_executor = TaskExecutor(config)
+        except Exception as e:
+            print(f"⚠️  Warning: Task executor initialization failed: {e}")
+            self.task_executor = None
     
     def process_input(self, user_input: str) -> str:
         """Process user input and generate response.
@@ -44,18 +55,26 @@ class ChatEngine:
         # Extract intent and entities
         intent, entities = self._extract_intent(user_input)
         
-        # Execute task based on intent
-        if intent == 'send_email':
-            response = self.task_executor.send_email(entities)
-        elif intent == 'schedule_task':
-            response = self.task_executor.schedule_task(entities)
-        elif intent == 'web_search':
-            response = self.task_executor.search_web(entities)
-        elif intent == 'get_tasks':
-            response = self.task_executor.get_scheduled_tasks()
-        elif intent == 'complete_task':
-            response = self.task_executor.complete_task(entities)
-        else:
+        # Execute task based on intent (if task executor is available)
+        response = None
+        if self.task_executor:
+            try:
+                if intent == 'send_email':
+                    response = self.task_executor.send_email(entities)
+                elif intent == 'schedule_task':
+                    response = self.task_executor.schedule_task(entities)
+                elif intent == 'web_search':
+                    response = self.task_executor.search_web(entities)
+                elif intent == 'get_tasks':
+                    response = self.task_executor.get_scheduled_tasks()
+                elif intent == 'complete_task':
+                    response = self.task_executor.complete_task(entities)
+            except Exception as e:
+                print(f"⚠️  Task execution error: {e}")
+                response = None
+        
+        # If no task response, use general response
+        if response is None:
             response = self._generate_response(user_input)
         
         # Add to memory
@@ -98,6 +117,10 @@ class ChatEngine:
             Generated response
         """
         try:
+            # Verify API key is available
+            if not self.api_key:
+                return "❌ Error: OPENROUTER_API_KEY is not configured. Please set it in your .env file."
+            
             # Prepare conversation history for context
             messages = [
                 {
@@ -140,18 +163,20 @@ class ChatEngine:
                 return "Sorry, I couldn't generate a response. Please try again."
         
         except requests.exceptions.Timeout:
-            return "Request timed out. Please try again."
+            return "⏱️ Request timed out. Please try again."
         except requests.exceptions.ConnectionError:
-            return "Connection error. Please check your internet connection and try again."
+            return "🔌 Connection error. Please check your internet connection and try again."
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 401:
-                return "Authentication failed. Please check your OPENROUTER_API_KEY."
+                return "🔐 Authentication failed. Please check your OPENROUTER_API_KEY in .env file."
             elif e.response.status_code == 429:
-                return "Rate limit exceeded. Please wait a moment and try again."
+                return "⚠️ Rate limit exceeded. Please wait a moment and try again."
+            elif e.response.status_code == 404:
+                return f"❌ Model not found: {self.model}. Please check your OPENROUTER_MODEL setting."
             else:
-                return f"API Error: {str(e)}"
+                return f"❌ API Error ({e.response.status_code}): {str(e)}"
         except Exception as e:
-            return f"I encountered an error: {str(e)}. Please try again."
+            return f"❌ Error: {str(e)}. Please try again."
     
     def get_status(self) -> str:
         """Get current bot status.
@@ -159,7 +184,9 @@ class ChatEngine:
         Returns:
             Status message
         """
-        task_count = len(self.task_executor.get_all_tasks())
+        task_count = 0
+        if self.task_executor:
+            task_count = len(self.task_executor.get_all_tasks())
         return f"✓ Bot is running | Using {self.model} | {task_count} scheduled tasks | Ready to help!"
     
     def get_conversation_history(self) -> str:
